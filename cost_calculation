@@ -1,0 +1,394 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+# ==================== PARAMETERS AND FUNCTION DEFINITIONS ====================
+# Constants
+SPACE_ELEVATOR_CAPACITY = 537000  # tons/year = 537,000,000 kg/year
+TARGET_TOTAL_MASS = 1e8  # 100 million tons
+KG_PER_TON = 1000
+
+# Cost parameters (dollars per kg)
+SPACE_ELEVATOR_COST_PER_KG = 500  # dollars/kg
+ROCKET_COST_PER_KG = 5000  # dollars/kg
+
+# Penalty parameters
+ROCKET_PENALTY_PER_EVENT = 1e9  # 1 billion dollars per penalty event
+MIN_ROCKET_PENALTY_PROB = 0.01  # 1% minimum penalty probability
+
+# ==================== MODIFIED PARAMETERS ====================
+# Time scale compression factor - slows down x changes, extends growth period
+TIME_SCALE_FACTOR = 3  # Adjust this to control growth time span
+
+# Sigmoid shape adjustment factor - makes function more gradual
+SIGMOID_SCALE_FACTOR = 5  # Adjust this to control Sigmoid steepness
+
+
+def year_to_x(year):
+    """Convert year to x value (adjusted time scale)"""
+    return (year - 2050) / TIME_SCALE_FACTOR - 100
+
+
+def sigmoid_modified(x):
+    """Gradual Sigmoid function"""
+    scaled_x = x / SIGMOID_SCALE_FACTOR
+    return np.where(scaled_x >= 0,
+                    1 / (1 + np.exp(-scaled_x)),
+                    np.exp(scaled_x) / (1 + np.exp(scaled_x)))
+
+
+# ==================== ROCKET MODEL FUNCTIONS ====================
+def launch_count(x):
+    return 80 + 220 * sigmoid_modified(x)
+
+
+def payload_per_launch(x):
+    return 125 + 375 * sigmoid_modified(x)
+
+
+def annual_rocket_capacity(x):
+    return launch_count(x) * payload_per_launch(x)
+
+
+# ==================== PENALTY MODELS ====================
+def rocket_penalty_probability(year):
+    """Rocket penalty probability function"""
+    x = year - 2050  # years since 2050
+    # p(x) = 0.1 * exp(-(ln(10)/950) * x)
+    prob = 0.1 * np.exp(-(np.log(10) / 950) * x)
+    return max(prob, MIN_ROCKET_PENALTY_PROB)
+
+
+def space_elevator_penalty_cost(random_seed=None):
+    """Space elevator penalty cost for one year"""
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    # Generate random number between 0 and 10000
+    r = np.random.randint(0, 10001)
+    p = r / 10000.0
+
+    # Avoid log(0) - use small epsilon for p=0
+    if p == 0:
+        p = 1e-10
+
+    # Cost = -125 * log10(p) in hundred-billion dollars
+    # Convert to dollars: multiply by 10^11
+    cost_hundred_billion = -125 * np.log10(p)
+    cost_dollars = cost_hundred_billion * 1e11
+
+    return cost_dollars, p
+
+
+# ==================== SET TIME FRAME ====================
+# Corrected time frame based on modified growth model
+start_year = 2050
+space_elevator_target_year = 2236  # Space elevator reaches 1B tons and STOPS
+rocket_target_year = 3005  # Rocket reaches 1B tons (corrected from 2811)
+end_year = rocket_target_year  # Use rocket's year as end year
+
+print("=" * 70)
+print("THIRD CHART: TOTAL COST COMPARISON (WITH PENALTIES) - CORRECTED")
+print("=" * 70)
+print(f"Time frame: {start_year} to {end_year} ({end_year - start_year} years)")
+print(f"Space elevator reaches 1B tons in: {space_elevator_target_year} (then stops)")
+print(f"Rocket reaches 1B tons in: {rocket_target_year}")
+
+# ==================== PREPARE DATA ====================
+# Create year range for full timeframe
+years_full = np.arange(start_year, end_year + 1)
+x_values_full = year_to_x(years_full)
+
+# Calculate rocket data for full timeframe
+rocket_launch_counts_full = launch_count(x_values_full)
+rocket_payloads_full = payload_per_launch(x_values_full)
+rocket_annual_capacities_full = annual_rocket_capacity(x_values_full)  # tons/year
+
+# Space elevator data - ONLY UP TO 2236
+space_elevator_active_years = np.arange(start_year, space_elevator_target_year + 1)
+space_elevator_annual_capacity_active = np.full_like(
+    space_elevator_active_years, SPACE_ELEVATOR_CAPACITY, dtype=float)  # tons/year
+
+# Convert capacities to kg/year for cost calculation
+rocket_annual_capacity_kg_full = rocket_annual_capacities_full * KG_PER_TON  # kg/year
+space_elevator_annual_capacity_kg_active = space_elevator_annual_capacity_active * KG_PER_TON  # kg/year
+
+# ==================== CALCULATE COSTS ====================
+# Set random seed based on current time
+current_seed = int(time.time() % 10000)
+np.random.seed(current_seed)
+print(f"\nRandom seed for space elevator penalties: {current_seed}")
+
+# Initialize arrays for costs (full timeframe)
+rocket_base_costs = np.zeros(len(years_full))
+rocket_penalty_costs = np.zeros(len(years_full))
+rocket_total_costs = np.zeros(len(years_full))
+
+space_elevator_base_costs = np.zeros(len(years_full))
+space_elevator_penalty_costs = np.zeros(len(years_full))
+space_elevator_total_costs = np.zeros(len(years_full))
+
+# For tracking penalty events
+rocket_penalty_events = np.zeros(len(years_full))
+space_elevator_penalty_probs = np.zeros(len(years_full))
+
+print("\nCalculating costs for each year...")
+print("Year\tRocket Base\tRocket Penalty\tSpaceE Base\tSpaceE Penalty\tSpaceE Status")
+print("-" * 100)
+
+for i, year in enumerate(years_full):
+    # ===== ROCKET COSTS =====
+    # Rocket operates for entire timeframe (2050-3005)
+    # Base cost: cost per kg * annual capacity in kg
+    rocket_base_costs[i] = ROCKET_COST_PER_KG * rocket_annual_capacity_kg_full[i]
+
+    # Penalty cost: for each launch, check if penalty occurs
+    annual_launches = rocket_launch_counts_full[i]
+    penalty_prob = rocket_penalty_probability(year)
+
+    # Simulate each launch independently
+    penalty_count = 0
+    for _ in range(int(np.floor(annual_launches))):
+        if np.random.random() < penalty_prob:
+            penalty_count += 1
+
+    # Handle fractional launches
+    fractional_launch = annual_launches - np.floor(annual_launches)
+    if fractional_launch > 0 and np.random.random() < penalty_prob * fractional_launch:
+        penalty_count += fractional_launch
+
+    rocket_penalty_costs[i] = penalty_count * ROCKET_PENALTY_PER_EVENT
+    rocket_penalty_events[i] = penalty_count
+    rocket_total_costs[i] = rocket_base_costs[i] + rocket_penalty_costs[i]
+
+    # ===== SPACE ELEVATOR COSTS =====
+    # Space elevator only operates until 2236
+    if year <= space_elevator_target_year:
+        # Find index in active years array
+        active_idx = year - start_year
+
+        # Base cost: cost per kg * annual capacity in kg
+        space_elevator_base_costs[i] = SPACE_ELEVATOR_COST_PER_KG * space_elevator_annual_capacity_kg_active[active_idx]
+
+        # Penalty cost: random natural disaster penalty
+        penalty_cost, penalty_prob = space_elevator_penalty_cost()
+        space_elevator_penalty_costs[i] = penalty_cost
+        space_elevator_penalty_probs[i] = penalty_prob
+        space_elevator_status = "ACTIVE"
+    else:
+        # Space elevator has stopped operation
+        space_elevator_base_costs[i] = 0
+        space_elevator_penalty_costs[i] = 0
+        space_elevator_penalty_probs[i] = 0
+        space_elevator_status = "STOPPED"
+
+    space_elevator_total_costs[i] = space_elevator_base_costs[i] + space_elevator_penalty_costs[i]
+
+    # Print progress every 100 years and at key transition years
+    if (year % 100 == 0 or year == start_year or year == end_year or
+            year == space_elevator_target_year or year == space_elevator_target_year + 1):
+        print(f"{year}\t"
+              f"{rocket_base_costs[i] / 1e9:.1f}B\t"
+              f"{rocket_penalty_costs[i] / 1e9:.1f}B\t"
+              f"{space_elevator_base_costs[i] / 1e9:.1f}B\t"
+              f"{space_elevator_penalty_costs[i] / 1e12:.2f}T\t"
+              f"{space_elevator_status}")
+
+# Calculate cumulative costs
+rocket_cumulative_total = np.cumsum(rocket_total_costs)
+space_elevator_cumulative_total = np.cumsum(space_elevator_total_costs)
+
+# ==================== STATISTICS ====================
+print("\n" + "=" * 70)
+print("COST STATISTICS (CORRECTED - SPACE ELEVATOR STOPS AT 2236):")
+print("=" * 70)
+
+# Rocket statistics (full timeframe)
+rocket_total_base = np.sum(rocket_base_costs)
+rocket_total_penalty = np.sum(rocket_penalty_costs)
+rocket_total_all = rocket_total_base + rocket_total_penalty
+
+print("\nROCKET (2050-3005, 955 years):")
+print(f"  Total base cost: ${rocket_total_base / 1e12:.2f} trillion")
+print(f"  Total penalty cost: ${rocket_total_penalty / 1e12:.2f} trillion")
+print(f"  Total cost: ${rocket_total_all / 1e12:.2f} trillion")
+print(f"  Average annual cost: ${np.mean(rocket_total_costs) / 1e9:.1f} billion")
+print(f"  Total penalty events: {np.sum(rocket_penalty_events):.0f}")
+print(f"  Average penalty probability: {np.mean([rocket_penalty_probability(y) for y in years_full]):.3%}")
+
+# Space elevator statistics (only active years)
+space_active_years = space_elevator_target_year - start_year + 1
+space_active_indices = np.where(years_full <= space_elevator_target_year)[0]
+
+space_total_base = np.sum(space_elevator_base_costs[space_active_indices])
+space_total_penalty = np.sum(space_elevator_penalty_costs[space_active_indices])
+space_total_all = space_total_base + space_total_penalty
+
+print(f"\nSPACE ELEVATOR (2050-{space_elevator_target_year}, {space_active_years} years active):")
+print(f"  Total base cost: ${space_total_base / 1e12:.2f} trillion")
+print(f"  Total penalty cost: ${space_total_penalty / 1e12:.2f} trillion")
+print(f"  Total cost: ${space_total_all / 1e12:.2f} trillion")
+print(
+    f"  Average annual cost (active years): ${np.mean(space_elevator_total_costs[space_active_indices]) / 1e9:.1f} billion")
+print(f"  Average penalty probability: {np.mean(space_elevator_penalty_probs[space_active_indices]):.4%}")
+
+print(f"\nCOMPARISON (up to {space_elevator_target_year} - when space elevator finishes):")
+common_years = np.where(years_full <= space_elevator_target_year)[0]
+rocket_cost_common = np.sum(rocket_total_costs[common_years])
+space_cost_common = np.sum(space_elevator_total_costs[common_years])
+print(f"  Rocket cost in first {len(common_years)} years: ${rocket_cost_common / 1e12:.2f} trillion")
+print(f"  Space elevator cost in same period: ${space_cost_common / 1e12:.2f} trillion")
+print(f"  Rocket is {rocket_cost_common / space_cost_common:.1f}x more expensive in same timeframe")
+
+print(f"\nCOMPARISON (full rocket timeframe vs space elevator active timeframe):")
+print(f"  Rocket (955 years) is {rocket_total_all / space_total_all:.1f}x more expensive overall")
+print(f"  Rocket's penalty is {rocket_total_penalty / space_total_penalty:.1f}x space elevator's penalty")
+
+# ==================== FIGURE 3: TOTAL COST COMPARISON ====================
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+plt.rcParams['axes.unicode_minus'] = False
+
+fig3, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[2, 1])
+
+# ----- Top: Total Annual Costs -----
+# Plot total annual costs
+line1, = ax1.plot(years_full, rocket_total_costs / 1e9, 'r-', linewidth=2, label='Rocket Total Annual Cost')
+line2, = ax1.plot(years_full, space_elevator_total_costs / 1e9, 'orange', linewidth=2,
+                  label='Space Elevator Total Annual Cost')
+
+# Highlight space elevator active period
+ax1.axvspan(start_year, space_elevator_target_year, alpha=0.1, color='orange', label='Space Elevator Active')
+ax1.axvline(x=space_elevator_target_year, color='orange', linestyle='--', alpha=0.7, linewidth=1)
+
+# Plot base costs (transparent)
+ax1.plot(years_full, rocket_base_costs / 1e9, 'r--', linewidth=1, alpha=0.5, label='Rocket Base Cost')
+ax1.plot(years_full, space_elevator_base_costs / 1e9, 'orange', linestyle='--', linewidth=1, alpha=0.5,
+         label='Space Elevator Base Cost')
+
+ax1.set_xlabel('Year')
+ax1.set_ylabel('Annual Cost (Billion USD)')
+ax1.set_title(
+    'Total Annual Cost Comparison: Space Elevator vs Rocket\n(Space Elevator stops after reaching 1B tons in 2236)')
+ax1.grid(True, alpha=0.3)
+ax1.set_xlim(start_year, end_year)
+ax1.legend(loc='upper left')
+
+# Set x-axis ticks
+tick_interval = 100 if (end_year - start_year) > 500 else 50
+ax1.set_xticks(np.arange(start_year, end_year + 1, tick_interval))
+
+# Add annotations for key years
+ax1.axvline(x=space_elevator_target_year, color='orange', linestyle=':', alpha=0.5)
+ax1.text(space_elevator_target_year, ax1.get_ylim()[1] * 0.9,
+         f'SE stops\n({space_elevator_target_year})',
+         ha='center', fontsize=8, color='orange', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+ax1.axvline(x=rocket_target_year, color='red', linestyle=':', alpha=0.5)
+ax1.text(rocket_target_year, ax1.get_ylim()[1] * 0.8,
+         f'Rocket: 1B tons\n({rocket_target_year})',
+         ha='center', fontsize=8, color='red', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+# ----- Bottom: Cost Components Breakdown -----
+# Create stacked bar for cost components (sample years)
+bar_years = [2050, 2100, 2150, 2200, 2235, 2236, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3005]
+bar_indices = [np.where(years_full == year)[0][0] if year in years_full else -1 for year in bar_years]
+bar_indices = [idx for idx in bar_indices if idx != -1]
+bar_years = [years_full[idx] for idx in bar_indices]
+
+rocket_base_bar = [rocket_base_costs[i] / 1e9 for i in bar_indices]
+rocket_penalty_bar = [rocket_penalty_costs[i] / 1e9 for i in bar_indices]
+space_base_bar = [space_elevator_base_costs[i] / 1e9 for i in bar_indices]
+space_penalty_bar = [space_elevator_penalty_costs[i] / 1e9 for i in bar_indices]
+
+bar_width = 25
+ax2.bar([y - bar_width / 2 for y in bar_years], rocket_base_bar, width=bar_width,
+        color='lightcoral', edgecolor='red', label='Rocket Base')
+ax2.bar([y - bar_width / 2 for y in bar_years], rocket_penalty_bar, width=bar_width,
+        bottom=rocket_base_bar, color='darkred', edgecolor='red', label='Rocket Penalty')
+
+ax2.bar([y + bar_width / 2 for y in bar_years], space_base_bar, width=bar_width,
+        color='navajowhite', edgecolor='orange', label='Space Elevator Base')
+ax2.bar([y + bar_width / 2 for y in bar_years], space_penalty_bar, width=bar_width,
+        bottom=space_base_bar, color='sienna', edgecolor='orange', label='Space Elevator Penalty')
+
+# Mark space elevator stop year with vertical line
+ax2.axvline(x=space_elevator_target_year, color='orange', linestyle='--', alpha=0.7, linewidth=1)
+
+ax2.set_xlabel('Year')
+ax2.set_ylabel('Annual Cost (Billion USD)')
+ax2.set_title('Cost Components Breakdown (Sample Years) - Space Elevator stops at 2236')
+ax2.grid(True, alpha=0.3, axis='y')
+ax2.set_xlim(start_year - 50, end_year + 50)
+ax2.legend(loc='upper left', fontsize='small')
+ax2.set_xticks([y for y in bar_years if y % 100 == 0 or y == space_elevator_target_year])
+
+# Rotate x-axis labels for better readability
+plt.setp(ax2.get_xticklabels(), rotation=45, ha='right')
+
+plt.suptitle(f'Transport Cost Analysis: Space Elevator vs Rocket\n'
+             f'Space Elevator: 2050-{space_elevator_target_year} ({space_active_years} yrs) | '
+             f'Rocket: 2050-{end_year} ({end_year - start_year + 1} yrs)\n'
+             f'Random Seed: {current_seed}', fontsize=12, fontweight='bold')
+plt.tight_layout()
+
+# ==================== ADDITIONAL FIGURE: CUMULATIVE COSTS ====================
+fig4, ax3 = plt.subplots(figsize=(12, 6))
+
+# Plot cumulative costs
+ax3.plot(years_full, rocket_cumulative_total / 1e12, 'r-', linewidth=3, label='Rocket Cumulative Cost')
+ax3.plot(years_full, space_elevator_cumulative_total / 1e12, 'orange', linewidth=3,
+         label='Space Elevator Cumulative Cost')
+
+# Mark space elevator stop year
+ax3.axvline(x=space_elevator_target_year, color='orange', linestyle='--', alpha=0.7, linewidth=1)
+ax3.text(space_elevator_target_year, ax3.get_ylim()[1] * 0.1,
+         f'SE stops\n({space_elevator_target_year})',
+         ha='center', fontsize=8, color='orange', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+# Mark when each reaches certain cost thresholds
+cost_thresholds = [1e12, 5e12, 10e12, 50e12, 100e12]  # 1T, 5T, 10T, 50T, 100T dollars
+colors = ['gray', 'brown', 'purple', 'blue', 'green']
+
+for threshold, color in zip(cost_thresholds, colors):
+    ax3.axhline(y=threshold / 1e12, color=color, linestyle=':', alpha=0.3, linewidth=0.5)
+
+    # Find when rocket reaches threshold
+    rocket_idx = np.where(rocket_cumulative_total >= threshold)[0]
+    if len(rocket_idx) > 0:
+        rocket_year = years_full[rocket_idx[0]]
+        ax3.plot(rocket_year, threshold / 1e12, 'ro', markersize=6)
+        ax3.text(rocket_year, threshold / 1e12 * 1.05, f'{rocket_year}',
+                 fontsize=7, color='red', ha='center')
+
+    # Find when space elevator reaches threshold (only if within active period)
+    space_idx = np.where(space_elevator_cumulative_total >= threshold)[0]
+    if len(space_idx) > 0:
+        space_year = years_full[space_idx[0]]
+        if space_year <= space_elevator_target_year:  # Only mark if within active period
+            ax3.plot(space_year, threshold / 1e12, 'o', color='orange', markersize=6)
+            ax3.text(space_year, threshold / 1e12 * 0.95, f'{space_year}',
+                     fontsize=7, color='orange', ha='center')
+
+ax3.set_xlabel('Year')
+ax3.set_ylabel('Cumulative Cost (Trillion USD)')
+ax3.set_title('Cumulative Total Cost Comparison\n(Space Elevator stops at 2236 after reaching 1B tons)')
+ax3.grid(True, alpha=0.3)
+ax3.set_xlim(start_year, end_year)
+ax3.legend(loc='upper left')
+ax3.set_xticks(np.arange(start_year, end_year + 1, tick_interval))
+
+plt.tight_layout()
+
+# ==================== DISPLAY CHARTS ====================
+plt.show()
+
+print("\n" + "=" * 70)
+print("CHARTS GENERATED:")
+print("=" * 70)
+print("1. Figure 3 (main): Total annual cost comparison (corrected for space elevator stopping)")
+print("2. Figure 4 (additional): Cumulative total cost comparison")
+print("\nKey corrections applied:")
+print(f"  - Space elevator operates: {start_year}-{space_elevator_target_year} only")
+print(f"  - After {space_elevator_target_year}, space elevator costs = 0")
+print(f"  - Rocket continues operating until {end_year}")
+print(f"  - Random seed: {current_seed}")
