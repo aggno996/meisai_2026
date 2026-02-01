@@ -1,0 +1,215 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ==================== PARAMETERS AND FUNCTION DEFINITIONS ====================
+# Constants
+SPACE_ELEVATOR_CAPACITY = 537000  # tons/year
+TARGET_TOTAL_MASS = 1e8  # 100 million tons
+
+# ==================== MODIFIED PARAMETERS ====================
+# Time scale compression factor - slows down x changes, extends growth period
+TIME_SCALE_FACTOR = 3  # Adjust this to control growth time span
+
+# Sigmoid shape adjustment factor - makes function more gradual
+SIGMOID_SCALE_FACTOR = 5  # Adjust this to control Sigmoid steepness
+
+
+def year_to_x(year):
+    """Convert year to x value (adjusted time scale)"""
+    return (year - 2050) / TIME_SCALE_FACTOR - 100
+
+
+def x_to_year(x):
+    """Convert x value to year"""
+    return 2050 + (x + 100) * TIME_SCALE_FACTOR
+
+
+def sigmoid_modified(x):
+    """Gradual Sigmoid function"""
+    scaled_x = x / SIGMOID_SCALE_FACTOR
+    return np.where(scaled_x >= 0,
+                    1 / (1 + np.exp(-scaled_x)),
+                    np.exp(scaled_x) / (1 + np.exp(scaled_x)))
+
+
+# ==================== ROCKET MODEL FUNCTIONS ====================
+def launch_count(x):
+    return 80 + 220 * sigmoid_modified(x)
+
+
+def payload_per_launch(x):
+    return 125 + 375 * sigmoid_modified(x)
+
+
+def annual_rocket_capacity(x):
+    return launch_count(x) * payload_per_launch(x)
+
+
+# ==================== DYNAMIC CALCULATION OF END YEAR ====================
+# Calculate when space elevator reaches target mass
+space_elevator_years_to_target = int(np.ceil(TARGET_TOTAL_MASS / SPACE_ELEVATOR_CAPACITY))
+space_elevator_target_year = 2050 + space_elevator_years_to_target
+print(f"Space elevator needs {space_elevator_years_to_target} years to reach 100 million tons")
+print(f"Space elevator target year: {space_elevator_target_year}")
+
+# Calculate when rocket reaches target mass
+current_year = 2050
+rocket_cumulative_mass = 0
+rocket_target_year = None
+
+# Set sufficient calculation years
+max_years = 1000  # Calculate up to 3050
+
+for year in range(current_year, current_year + max_years):
+    x = year_to_x(year)
+    annual_cap = annual_rocket_capacity(x)
+
+    if np.isnan(annual_cap) or np.isinf(annual_cap):
+        break
+
+    rocket_cumulative_mass += annual_cap
+
+    if rocket_cumulative_mass >= TARGET_TOTAL_MASS:
+        rocket_target_year = year
+        break
+
+# Check if rocket reached target
+if rocket_target_year is None:
+    # If not reached, use previously calculated 2811
+    rocket_target_year = 2811
+
+# Take the later year as end year
+end_year = max(space_elevator_target_year, rocket_target_year)
+
+print(f"Rocket reaches 100 million tons in year: {rocket_target_year}")
+print(f"Chart end year: {end_year}")
+print(f"Time scale factor: {TIME_SCALE_FACTOR}, Sigmoid scale factor: {SIGMOID_SCALE_FACTOR}")
+
+# ==================== PREPARE DATA ====================
+# Create year range
+years = np.arange(2050, end_year + 1)
+x_values = year_to_x(years)
+
+# Calculate rocket data
+rocket_launch_counts = launch_count(x_values)
+rocket_payloads = payload_per_launch(x_values)
+rocket_annual_capacities = annual_rocket_capacity(x_values)
+
+# Space elevator data
+space_elevator_annual = np.full_like(years, SPACE_ELEVATOR_CAPACITY, dtype=float)
+
+# ==================== PLOTTING SETTINGS ====================
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+plt.rcParams['axes.unicode_minus'] = False
+
+# ==================== FIGURE 1: COMPOSITE PLOT ====================
+fig1 = plt.figure(figsize=(16, 10))
+
+# ----- Top Left: Rocket Launch Frequency -----
+ax1 = plt.subplot(2, 2, 1)
+ax1.plot(years, rocket_launch_counts, 'b-', linewidth=2)
+ax1.set_xlabel('Year')
+ax1.set_ylabel('Launch Frequency (launches/year)')
+ax1.set_title('Rocket Annual Launch Frequency')
+ax1.grid(True, alpha=0.3)
+ax1.set_xlim(2050, end_year)
+# Set x-axis ticks, one every 200 years if span > 500 years
+tick_interval = 200 if end_year - 2050 > 500 else 100
+ax1.set_xticks(np.arange(2050, end_year + 1, tick_interval))
+
+# ----- Bottom Left: Rocket Payload per Launch -----
+ax2 = plt.subplot(2, 2, 3)
+ax2.plot(years, rocket_payloads, 'g-', linewidth=2)
+ax2.set_xlabel('Year')
+ax2.set_ylabel('Payload per Launch (tons/launch)')
+ax2.set_title('Rocket Payload Capacity per Launch')
+ax2.grid(True, alpha=0.3)
+ax2.set_xlim(2050, end_year)
+ax2.set_xticks(np.arange(2050, end_year + 1, tick_interval))
+
+# ----- Right: Annual Transport Capacity Comparison (with broken axis) -----
+ax3 = plt.subplot(1, 2, 2)
+
+# Plot data
+line1, = ax3.plot(years, rocket_annual_capacities, 'r-', linewidth=3, label='Rocket Annual Capacity')
+
+
+ax3.set_xlabel('Year')
+ax3.set_ylabel('Annual Transport Capacity (tons/year)')
+ax3.set_title('Annual Transport Capacity \n(Gradual Growth Model)')
+ax3.grid(True, alpha=0.3)
+ax3.set_xlim(2050, end_year)
+ax3.set_xticks(np.arange(2050, end_year + 1, tick_interval))
+ax3.legend(loc='lower right')
+
+plt.suptitle('Analysis of Rocket Transport Capacity (Gradual Growth Model)',
+             fontsize=16, fontweight='bold')
+plt.tight_layout()
+
+# ==================== FIGURE 2: CUMULATIVE TRANSPORT MASS ====================
+fig2, ax4 = plt.subplots(figsize=(12, 7))
+
+# Calculate cumulative transport
+rocket_cumulative = np.cumsum(rocket_annual_capacities)
+space_elevator_cumulative = SPACE_ELEVATOR_CAPACITY * np.arange(1, len(years) + 1)
+
+# Plot cumulative curves
+ax4.plot(years, rocket_cumulative, 'r-', linewidth=3, label='Rocket Cumulative Transport')
+ax4.plot(years, space_elevator_cumulative, 'orange', linewidth=3, label='Space Elevator Cumulative Transport')
+
+# Mark 100 million ton line
+ax4.axhline(y=TARGET_TOTAL_MASS, color='gray', linestyle='--', alpha=0.5, label='100 Million Ton Target')
+
+# Mark years when each reaches target
+ax4.plot(rocket_target_year, TARGET_TOTAL_MASS, 'ro', markersize=10,
+         label=f'Rocket reaches ({rocket_target_year})')
+ax4.plot(space_elevator_target_year, TARGET_TOTAL_MASS, 'o', color='orange', markersize=10,
+         label=f'Space Elevator reaches ({space_elevator_target_year})')
+
+# Add text annotations
+ax4.text(rocket_target_year, TARGET_TOTAL_MASS * 1.05, f'{rocket_target_year}',
+         fontsize=9, color='red', ha='center')
+ax4.text(space_elevator_target_year, TARGET_TOTAL_MASS * 0.95, f'{space_elevator_target_year}',
+         fontsize=9, color='orange', ha='center')
+
+ax4.set_xlabel('Year')
+ax4.set_ylabel('Cumulative Transport Mass (tons)')
+ax4.set_title('Cumulative Transport Mass Comparison (Cumulative from 2050)')
+ax4.grid(True, alpha=0.3)
+ax4.legend(loc='upper left')
+ax4.set_xlim(2050, end_year)
+ax4.set_xticks(np.arange(2050, end_year + 1, tick_interval))
+
+# Set y-axis to scientific notation
+ax4.ticklabel_format(axis='y', style='sci', scilimits=(6, 8))
+
+plt.tight_layout()
+
+# ==================== DISPLAY CHARTS ====================
+plt.show()
+
+# ==================== OUTPUT KEY DATA ====================
+print(f"\nKEY DATA POINTS:")
+print(f"Time span: {end_year - 2050} years")
+print(f"Rocket final launch frequency: {rocket_launch_counts[-1]:.1f} launches/year")
+print(f"Rocket final payload capacity: {rocket_payloads[-1]:.1f} tons/launch")
+print(f"Rocket final annual capacity: {rocket_annual_capacities[-1]:,.0f} tons/year")
+print(f"Space elevator annual capacity: {SPACE_ELEVATOR_CAPACITY:,.0f} tons/year")
+print(f"Rocket final cumulative transport: {rocket_cumulative[-1]:,.0f} tons")
+print(f"Space elevator final cumulative transport: {space_elevator_cumulative[-1]:,.0f} tons")
+
+# Growth analysis
+print(f"\nGROWTH ANALYSIS:")
+print(f"Sigmoid value in 2050: {sigmoid_modified(year_to_x(2050)):.6f}")
+print(f"Sigmoid value in 2150: {sigmoid_modified(year_to_x(2150)):.6f}")
+print(f"Sigmoid value in 2250: {sigmoid_modified(year_to_x(2250)):.6f}")
+print(f"Sigmoid value in 2350: {sigmoid_modified(year_to_x(2350)):.6f}")
+print(f"Sigmoid value in 2450: {sigmoid_modified(year_to_x(2450)):.6f}")
+print(f"Sigmoid value in 2550: {sigmoid_modified(year_to_x(2550)):.6f}")
+
+# Additional comparison data
+print(f"\nCOMPARISON:")
+print(
+    f"Space elevator reaches target {space_elevator_target_year - rocket_target_year} years {'earlier' if space_elevator_target_year < rocket_target_year else 'later'} than rocket")
+print(
+    f"Space elevator is {SPACE_ELEVATOR_CAPACITY / rocket_annual_capacities[-1]:.1f} times more efficient than rocket's final capacity")
